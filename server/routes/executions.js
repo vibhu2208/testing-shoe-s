@@ -1,7 +1,8 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const { TestExecution, TestResult, TestAssignment, TestTemplate, TemplateParameter, User } = require('../models');
+const { TestExecution, TestResult, TestAssignment, TestTemplate, TemplateParameter, User, Report } = require('../models');
 const { authenticateToken, authorizeTester, authorizeQA, authorizeCompany } = require('../middleware/auth');
+const { generateCoAPDF, savePDFToFile, transformExecutionToCoAData } = require('../utils/coaReportGenerator');
 
 const router = express.Router();
 
@@ -432,13 +433,121 @@ router.put('/:id/qa-review', [
 
     await execution.update(updateData);
 
+    let reportInfo = null;
+
+    // Auto-generate CoA report if approved
+    if (action === 'approve') {
+      try {
+        // Check if report already exists
+        const existingReport = await Report.findOne({
+          where: { executionId: execution.id }
+        });
+
+        if (!existingReport) {
+          // Fetch complete execution data for report generation
+          const fullExecution = await TestExecution.findByPk(execution.id, {
+            include: [
+              {
+                model: TestAssignment,
+                as: 'assignment',
+                include: [{
+                  model: TestTemplate,
+                  as: 'template'
+                }]
+              },
+              {
+                model: User,
+                as: 'tester',
+                attributes: ['firstName', 'lastName', 'email']
+              },
+              {
+                model: User,
+                as: 'qaManager',
+                attributes: ['firstName', 'lastName', 'email']
+              },
+              {
+                model: TestResult,
+                as: 'results',
+                include: [{
+                  model: TemplateParameter,
+                  as: 'parameter'
+                }]
+              }
+            ]
+          });
+
+          // Generate report number
+          const generateReportNumber = async () => {
+            const year = new Date().getFullYear();
+            const prefix = process.env.REPORT_NUMBER_PREFIX || 'TST';
+            
+            const lastReport = await Report.findOne({
+              where: {
+                reportNumber: {
+                  [require('sequelize').Op.like]: `${prefix}-${year}-%`
+                }
+              },
+              order: [['reportNumber', 'DESC']]
+            });
+
+            let sequence = 1;
+            if (lastReport) {
+              const lastSequence = parseInt(lastReport.reportNumber.split('-')[2]);
+              sequence = lastSequence + 1;
+            }
+
+            return `${prefix}-${year}-${sequence.toString().padStart(4, '0')}`;
+          };
+
+          const reportNumber = await generateReportNumber();
+
+          // Transform execution data to CoA format
+          const coaData = transformExecutionToCoAData(fullExecution);
+          coaData.reportNo = reportNumber;
+
+          // Generate CoA PDF
+          const pdfBuffer = await generateCoAPDF(coaData);
+          const filePath = await savePDFToFile(pdfBuffer, reportNumber);
+
+          // Save report record
+          const report = await Report.create({
+            executionId: execution.id,
+            reportNumber,
+            filePath,
+            generatedBy: req.user.id
+          });
+
+          reportInfo = {
+            id: report.id,
+            reportNumber: report.reportNumber,
+            generated: true
+          };
+        } else {
+          reportInfo = {
+            id: existingReport.id,
+            reportNumber: existingReport.reportNumber,
+            generated: false,
+            message: 'Report already exists'
+          };
+        }
+      } catch (reportError) {
+        console.error('Auto CoA report generation failed:', reportError);
+        // Don't fail the approval if report generation fails
+        reportInfo = {
+          error: 'Report generation failed',
+          message: reportError.message
+        };
+      }
+    }
+
     res.json({
       message: `Test ${action}d successfully`,
       execution: {
         id: execution.id,
         action,
         reviewedAt: action === 'approve' ? updateData.approvedAt : updateData.rejectedAt
-      }
+      },
+      report: reportInfo
     });
   } catch (error) {
     console.error('QA review error:', error);

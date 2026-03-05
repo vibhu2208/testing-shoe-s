@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { TestExecution, TestResult, TestAssignment, TestTemplate, TemplateParameter, User, Report } = require('../models');
 const { authenticateToken, authorizeQA, authorizeCompany } = require('../middleware/auth');
+const { generateCoAPDF, savePDFToFile, transformExecutionToCoAData } = require('../utils/coaReportGenerator');
 
 const router = express.Router();
 
@@ -158,7 +159,7 @@ const generatePDFReport = async (execution, reportNumber) => {
   });
 };
 
-// Generate report (QA Manager or Admin only)
+// Generate CoA PDF report (QA Manager or Admin only)
 router.post('/generate/:executionId', authenticateToken, authorizeQA, async (req, res) => {
   try {
     const execution = await TestExecution.findByPk(req.params.executionId, {
@@ -216,8 +217,13 @@ router.post('/generate/:executionId', authenticateToken, authorizeQA, async (req
     // Generate report number
     const reportNumber = await generateReportNumber();
 
-    // Generate PDF
-    const filePath = await generatePDFReport(execution, reportNumber);
+    // Transform execution data to CoA format
+    const coaData = transformExecutionToCoAData(execution);
+    coaData.reportNo = reportNumber; // Override with generated report number
+
+    // Generate CoA PDF
+    const pdfBuffer = await generateCoAPDF(coaData);
+    const filePath = await savePDFToFile(pdfBuffer, reportNumber);
 
     // Save report record
     const report = await Report.create({
@@ -309,26 +315,51 @@ router.get('/', authenticateToken, authorizeCompany, async (req, res) => {
 // Download report
 router.get('/download/:reportNumber', authenticateToken, authorizeCompany, async (req, res) => {
   try {
+    console.log(`Download request for report: ${req.params.reportNumber}`);
+    
     const report = await Report.findOne({
       where: { reportNumber: req.params.reportNumber }
     });
 
     if (!report) {
+      console.log(`Report not found in database: ${req.params.reportNumber}`);
       return res.status(404).json({ message: 'Report not found' });
     }
 
+    console.log(`Report found, checking file path: ${report.filePath}`);
+    
     if (!fs.existsSync(report.filePath)) {
-      return res.status(404).json({ message: 'Report file not found' });
+      console.error(`Report file not found on disk: ${report.filePath}`);
+      return res.status(404).json({ message: 'Report file not found on disk' });
     }
 
+    // Set proper headers for PDF download
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${report.reportNumber}.pdf"`);
+    res.setHeader('Cache-Control', 'no-cache');
+    
+    console.log(`Streaming file: ${report.filePath}`);
     
     const fileStream = fs.createReadStream(report.filePath);
+    
+    fileStream.on('error', (streamError) => {
+      console.error('File stream error:', streamError);
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Error reading report file' });
+      }
+    });
+    
+    fileStream.on('end', () => {
+      console.log(`Successfully streamed report: ${report.reportNumber}`);
+    });
+    
     fileStream.pipe(res);
+    
   } catch (error) {
     console.error('Download report error:', error);
-    res.status(500).json({ message: 'Server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Server error during download' });
+    }
   }
 });
 
@@ -386,6 +417,110 @@ router.get('/:reportNumber', authenticateToken, authorizeCompany, async (req, re
   } catch (error) {
     console.error('Get report error:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Generate CoA report specifically (new endpoint)
+router.post('/generate-coa', authenticateToken, authorizeQA, async (req, res) => {
+  try {
+    const { executionId } = req.body;
+
+    if (!executionId) {
+      return res.status(400).json({ message: 'Execution ID is required' });
+    }
+
+    const execution = await TestExecution.findByPk(executionId, {
+      include: [
+        {
+          model: TestAssignment,
+          as: 'assignment',
+          include: [{
+            model: TestTemplate,
+            as: 'template'
+          }]
+        },
+        {
+          model: User,
+          as: 'tester',
+          attributes: ['firstName', 'lastName', 'email']
+        },
+        {
+          model: User,
+          as: 'qaManager',
+          attributes: ['firstName', 'lastName', 'email']
+        },
+        {
+          model: TestResult,
+          as: 'results',
+          include: [{
+            model: TemplateParameter,
+            as: 'parameter'
+          }]
+        }
+      ]
+    });
+
+    if (!execution) {
+      return res.status(404).json({ message: 'Test execution not found' });
+    }
+
+    // Check if approved
+    if (!execution.approvedAt) {
+      return res.status(400).json({ message: 'Test must be approved before generating CoA report' });
+    }
+
+    // Check if report already exists
+    const existingReport = await Report.findOne({
+      where: { executionId: execution.id }
+    });
+
+    if (existingReport) {
+      return res.status(200).json({ 
+        message: 'CoA report already exists',
+        report: {
+          id: existingReport.id,
+          reportNumber: existingReport.reportNumber,
+          filePath: existingReport.filePath,
+          generatedAt: existingReport.generatedAt
+        }
+      });
+    }
+
+    // Generate report number
+    const reportNumber = await generateReportNumber();
+
+    // Transform execution data to CoA format
+    const coaData = transformExecutionToCoAData(execution);
+    coaData.reportNo = reportNumber; // Override with generated report number
+
+    // Generate CoA PDF
+    const pdfBuffer = await generateCoAPDF(coaData);
+    const filePath = await savePDFToFile(pdfBuffer, reportNumber);
+
+    // Save report record
+    const report = await Report.create({
+      executionId: execution.id,
+      reportNumber,
+      filePath,
+      generatedBy: req.user.id
+    });
+
+    res.status(201).json({
+      message: 'CoA report generated successfully',
+      report: {
+        id: report.id,
+        reportNumber: report.reportNumber,
+        filePath: report.filePath,
+        generatedAt: report.generatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('CoA report generation error:', error);
+    res.status(500).json({ 
+      message: 'Failed to generate CoA report',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
   }
 });
 

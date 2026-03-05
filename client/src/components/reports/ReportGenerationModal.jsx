@@ -66,9 +66,9 @@ const ReportGenerationModal = ({ executions, onSuccess, onCancel }) => {
     }
   };
 
-  const handleDownloadReport = async (reportId) => {
+  const handleDownloadReport = async (reportNumber) => {
     try {
-      const response = await reportsAPI.downloadReport(reportId);
+      const response = await reportsAPI.downloadReport(reportNumber);
       
       // Create blob and download
       const blob = new Blob([response.data], { type: 'application/pdf' });
@@ -151,7 +151,7 @@ const ReportGenerationModal = ({ executions, onSuccess, onCancel }) => {
                       </div>
                       <Button
                         size="sm"
-                        onClick={() => handleDownloadReport(report.id)}
+                        onClick={() => handleDownloadReport(report.reportNumber)}
                         className="bg-green-600 hover:bg-green-700"
                       >
                         <Download className="mr-2 h-4 w-4" />

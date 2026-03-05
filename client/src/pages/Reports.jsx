@@ -62,9 +62,10 @@ const Reports = () => {
     fetchApprovedExecutions();
   };
 
-  const handleDownloadReport = async (reportId) => {
+  const handleDownloadReport = async (reportNumber) => {
     try {
-      const response = await reportsAPI.downloadReport(reportId);
+      setLoading(true);
+      const response = await reportsAPI.downloadReport(reportNumber);
       
       // Create blob and download
       const blob = new Blob([response.data], { type: 'application/pdf' });
@@ -88,8 +89,10 @@ const Reports = () => {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError('Failed to download report');
-      console.error('Download report error:', err);
+      console.error('Download error:', err);
+      setError(`Failed to download report: ${err.response?.data?.message || err.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -299,7 +302,7 @@ const Reports = () => {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => handleDownloadReport(report.id)}
+                      onClick={() => handleDownloadReport(report.reportNumber)}
                       className="flex-1"
                     >
                       <Download className="mr-2 h-4 w-4" />
