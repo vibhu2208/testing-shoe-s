@@ -12,6 +12,7 @@ import Executions from './pages/Executions';
 import QAApproval from './pages/QAApproval';
 import Reports from './pages/Reports';
 import Users from './pages/Users';
+import Profile from './pages/Profile';
 import './index.css';
 
 // Create a client
@@ -23,7 +24,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-const Profile = () => <div>User Profile</div>;
 const Unauthorized = () => (
   <div className="min-h-screen flex items-center justify-center">
     <div className="text-center">
