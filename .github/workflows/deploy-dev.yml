@@ -57,6 +57,6 @@ jobs:
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
           cd ~/app
-          docker compose pull
-          docker compose up -d
+          docker-compose pull
+          docker-compose up -d
           docker image prune -a -f
