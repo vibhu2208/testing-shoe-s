@@ -1,8 +1,9 @@
-name: Deploy Production Environment
+name: CI/CD Pipeline
 
 on:
   push:
     branches:
+      - dev
       - main
 
 jobs:
@@ -11,39 +12,45 @@ jobs:
 
     steps:
 
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-    - name: Login to DockerHub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-    - name: Build backend image
-      run: |
-        docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-server:prod ./server
+      - name: Set Deployment Variables
+        run: |
+          if [[ "${GITHUB_REF##*/}" == "main" ]]; then
+            echo "TAG=prod" >> $GITHUB_ENV
+            echo "DEPLOY_PATH=~/prod" >> $GITHUB_ENV
+          else
+            echo "TAG=latest" >> $GITHUB_ENV
+            echo "DEPLOY_PATH=~/app" >> $GITHUB_ENV
+          fi
 
-    - name: Build frontend image
-      run: |
-        docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-client:prod ./client
+      - name: Build Backend Image
+        run: docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-server:$TAG ./server
 
-    - name: Push backend image
-      run: |
-        docker push ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-server:prod
+      - name: Build Frontend Image
+        run: docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-client:$TAG ./client
 
-    - name: Push frontend image
-      run: |
-        docker push ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-client:prod
+      - name: Push Backend Image
+        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-server:$TAG
 
-    - name: Deploy to Production EC2
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_SSH_KEY }}
-        script: |
-          cd ~/prod
-          docker-compose pull
-          docker-compose up -d
-          docker image prune -a -f
+      - name: Push Frontend Image
+        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/testingsystem-client:$TAG
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd $DEPLOY_PATH
+            docker-compose pull
+            docker-compose up -d
+            docker image prune -a -f
